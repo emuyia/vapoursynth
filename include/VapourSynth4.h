@@ -293,7 +293,11 @@ typedef enum VSDataTypeHint {
 typedef enum VSRequestPattern {
     rpGeneral = 0, /* General pattern */
     rpNoFrameReuse = 1, /* When requesting all output frames from the filter no frame will be requested more than once from this input clip, never requests frames beyond the end of the clip */
-    rpStrictSpatial = 2 /* Always (and only) requests frame n from input clip when generating output frame n, never requests frames beyond the end of the clip */
+    rpStrictSpatial = 2 /* Always (and only) requests frame n from the input clip when generating output frame n, never requests frames beyond the end of the clip */
+#if VAPOURSYNTH_API_MINOR >= 1   
+    ,
+    rpFrameReuseLastOnly = 3 /* Added in API 4.1, This modes is basically identical rpNoFrameReuse except that it hints the last frame may be requested multiple times */
+#endif
 } VSRequestPattern;
 
 typedef enum VSCacheMode {

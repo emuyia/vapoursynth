@@ -139,7 +139,7 @@ AS_IF(
        AC_DEFINE([VS_CORE_EXPORTS])
        AC_DEFINE([VS_GRAPH_API])
 
-       PKG_CHECK_MODULES([ZIMG], [zimg])
+       PKG_CHECK_MODULES([ZIMG], [zimg >= 3.0.5])
 
        AC_LANG_PUSH([C++])
        saved_cppflags="$CPPFLAGS"
@@ -151,8 +151,8 @@ AS_IF(
                                          [[
 #include <zimg.h>
 
-#if ZIMG_API_VERSION < ZIMG_MAKE_API_VERSION(2, 3)
-#error zimg API v2.3 or greater required
+#if ZIMG_API_VERSION < ZIMG_MAKE_API_VERSION(2, 4)
+#error zimg API v2.4 or greater required
 #endif
                                          ]],
                                          [[

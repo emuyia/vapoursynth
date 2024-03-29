@@ -832,6 +832,7 @@ private:
     bool cacheLinear = false;
     bool cacheOverride = false;
     bool cacheEnabled = false; // FIXME, needs to be atomic?
+    bool cacheLastOnly = false;
     VSCache cache;
 
     // api3
@@ -846,6 +847,7 @@ public:
     VSNode(const std::string &name, const VSAudioInfo *ai, VSFilterGetFrame getFrame, VSFilterFree free, VSFilterMode filterMode, const VSFilterDependency *dependencies, int numDeps, void *instanceData, int apiMajor, VSCore *core);
     ~VSNode();
 
+    void updateCacheState();
     void addConsumer(VSNode *consumer, int strictSpatial);
     void removeConsumer(VSNode *consumer, int strictSpatial);
 
@@ -1049,8 +1051,15 @@ private:
     VSCoreInfo coreInfo; // API3 compatibility
     std::set<VSNode *> caches;
     std::mutex cacheLock;
+    static bool m_isPortable;
+    static std::wstring m_basePath;
+    static std::once_flag m_portableOnceFlag;
 
     std::atomic<int> cpuLevel;
+
+#ifdef VS_TARGET_OS_WINDOWS
+    static void isPortableInit();
+#endif
 
     ~VSCore();
 

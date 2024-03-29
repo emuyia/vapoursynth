@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <regex>
 #include <algorithm>
 #include "VSHelper4.h"
 #include "VSConstants4.h"
@@ -514,23 +515,27 @@ static const VSFrame *VS_CC shufflePlanesGetframe(int n, int activationReason, v
 
         if (d->nodes[2] && d->nodes[2] != d->nodes[0] && d->nodes[2] != d->nodes[1])
             vsapi->requestFrameFilter(n, d->nodes[2], frameCtx);
+
+        if (d->nodes[3] && d->nodes[3] != d->nodes[0] && d->nodes[3] != d->nodes[1] && d->nodes[3] != d->nodes[2])
+            vsapi->requestFrameFilter(n, d->nodes[3], frameCtx);
     } else if (activationReason == arAllFramesReady) {
         if (d->vi.format.colorFamily != cfGray) {
-            const VSFrame *src[3];
+            const VSFrame *src[4];
             VSFrame *dst;
 
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 4; i++)
                 src[i] = vsapi->getFrameFilter(n, d->nodes[i], frameCtx);
 
-            dst = vsapi->newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, src, d->plane, src[0], core);
+            dst = vsapi->newVideoFrame2(&d->vi.format, d->vi.width, d->vi.height, src, d->plane, src[3], core);
 
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 4; i++)
                 vsapi->freeFrame(src[i]);
 
             return dst;
         } else {
             VSFrame *dst;
             const VSFrame *src = vsapi->getFrameFilter(n, d->nodes[0], frameCtx);
+
             const VSVideoFormat *fi = vsapi->getVideoFrameFormat(src);
 
             if (d->plane[0] >= fi->numPlanes) {
@@ -539,9 +544,12 @@ static const VSFrame *VS_CC shufflePlanesGetframe(int n, int activationReason, v
                 return nullptr;
             }
 
-            dst = vsapi->newVideoFrame2(&d->vi.format, vsapi->getFrameWidth(src, d->plane[0]), vsapi->getFrameHeight(src, d->plane[0]), &src, d->plane, src, core);
+            const VSFrame *prop_src = vsapi->getFrameFilter(n, d->nodes[3], frameCtx);
+
+            dst = vsapi->newVideoFrame2(&d->vi.format, vsapi->getFrameWidth(src, d->plane[0]), vsapi->getFrameHeight(src, d->plane[0]), &src, d->plane, prop_src, core);
 
             vsapi->freeFrame(src);
+            vsapi->freeFrame(prop_src);
             return dst;
         }
     }
@@ -562,7 +570,7 @@ static void VS_CC shufflePlanesCreate(const VSMap *in, VSMap *out, void *userDat
     int nplanes = vsapi->mapNumElements(in, "planes");
     int err;
 
-    d->nodes.resize(3);
+    d->nodes.resize(4);
     assert(d->plane[0] == 0);
 
     d->format = vsapi->mapGetIntSaturated(in, "colorfamily", 0, 0);
@@ -603,6 +611,10 @@ static void VS_CC shufflePlanesCreate(const VSMap *in, VSMap *out, void *userDat
     } else if (d->format != cfGray && nclips == 2) {
         d->nodes[2] = vsapi->addNodeRef(d->nodes[1]);
     }
+
+    d->nodes[3] = vsapi->mapGetNode(in, "prop_src", 0, &err);
+    if (err)
+        d->nodes[3] = vsapi->addNodeRef(d->nodes[0]);
 
     for (int i = 0; i < outplanes; i++) {
         if (d->plane[i] < 0 || (vsapi->getVideoInfo(d->nodes[i])->format.colorFamily != cfUndefined && d->plane[i] >= vsapi->getVideoInfo(d->nodes[i])->format.numPlanes))
@@ -661,7 +673,7 @@ static void VS_CC shufflePlanesCreate(const VSMap *in, VSMap *out, void *userDat
         VSFilterDependency deps1[] = {{ d->nodes[0], rpStrictSpatial }};
         vsapi->createVideoFilter(out, "ShufflePlanes", &d->vi, shufflePlanesGetframe, filterFree<ShufflePlanesData>, fmParallel, deps1, 1, d.get(), core);
     } else {
-        VSFilterDependency deps3[] = {{ d->nodes[0], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[0])->numFrames) ? rpStrictSpatial : rpGeneral }, { d->nodes[1], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[1])->numFrames) ? rpStrictSpatial : rpGeneral }, { d->nodes[2], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[2])->numFrames) ? rpStrictSpatial : rpGeneral }};
+        VSFilterDependency deps3[] = {{ d->nodes[0], rpStrictSpatial}, { d->nodes[1], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[1])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly }, { d->nodes[2], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[2])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly }, { d->nodes[3], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[3])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly } };
         vsapi->createVideoFilter(out, "ShufflePlanes", &d->vi, shufflePlanesGetframe, filterFree<ShufflePlanesData>, fmParallel, deps3, 3, d.get(), core);
     }
 
@@ -1141,7 +1153,7 @@ static void VS_CC stackCreate(const VSMap *in, VSMap *out, void *userData, VSCor
 
         std::vector<VSFilterDependency> deps;
         for (int i = 0; i < numclips; i++)
-            deps.push_back({d->nodes[i], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[i])->numFrames) ? rpStrictSpatial : rpGeneral});
+            deps.push_back({d->nodes[i], (d->vi.numFrames <= vsapi->getVideoInfo(d->nodes[i])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly});
         vsapi->createVideoFilter(out, d->vertical ? "StackVertical" : "StackHorizontal", &d->vi, stackGetframe, filterFree<StackData>, fmParallel, deps.data(), numclips, d.get(), core);
         d.release();
     }
@@ -1575,7 +1587,7 @@ static void VS_CC frameEvalCreate(const VSMap *in, VSMap *out, void *userData, V
 
     std::vector<VSFilterDependency> deps;
     for (int i = 0; i < numpropsrc; i++)
-        deps.push_back({d->propsrc[i], rpGeneral}); // FIXME, propsrc could be strict spatial
+        deps.push_back({d->propsrc[i], (d->vi.numFrames <= vsapi->getVideoInfo(d->propsrc[i])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly });
     for (int i = 0; i < numclipsrc; i++)
         deps.push_back({clipsrc[i], rpGeneral});
     vsapi->createVideoFilter(out, "FrameEval", &d->vi, (d->propsrc.size() > 0) ? frameEvalGetFrameWithProps : frameEvalGetFrameNoProps, frameEvalFree, (d->propsrc.size() > 0) ? fmParallelRequests : fmUnordered, deps.data(), static_cast<int>(deps.size()), d.get(), core);
@@ -1675,7 +1687,7 @@ static void VS_CC modifyFrameCreate(const VSMap *in, VSMap *out, void *userData,
 
     std::vector<VSFilterDependency> deps;
     for (int i = 0; i < numnode; i++)
-        deps.push_back({d->node[i], rpStrictSpatial});
+        deps.push_back({d->node[i], (d->vi.numFrames <= vsapi->getVideoInfo(d->node[i])->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly});
     vsapi->createVideoFilter(out, "ModifyFrame", &d->vi, modifyFrameGetFrame, modifyFrameFree, fmParallelRequests, deps.data(), numnode, d.get(), core);
     d.release();
 }
@@ -2049,7 +2061,7 @@ static void VS_CC planeStatsCreate(const VSMap *in, VSMap *out, void *userData, 
     d->propDiff = tempprop + "Diff";
     d->cpulevel = vs_get_cpulevel(core);
 
-    VSFilterDependency deps[] = {{d->node1, rpStrictSpatial}, {d->node2, !d->node2 ? 0 : (vi->numFrames <= vsapi->getVideoInfo(d->node2)->numFrames) ? rpStrictSpatial : rpGeneral}};
+    VSFilterDependency deps[] = {{d->node1, rpStrictSpatial}, {d->node2, !d->node2 ? 0 : (vi->numFrames <= vsapi->getVideoInfo(d->node2)->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly}};
     vsapi->createVideoFilter(out, "PlaneStats", vi, planeStatsGetFrame, filterFree<PlaneStatsData>, fmParallel, deps, d->node2 ? 2 : 1, d.get(), core);
     d.release();
 }
@@ -2098,7 +2110,7 @@ static void VS_CC clipToPropCreate(const VSMap *in, VSMap *out, void *userData, 
     d->prop = tmpprop ? tmpprop : "_Alpha";
 
 
-    VSFilterDependency deps[] = {{d->node1, (vi.numFrames >= vi2->numFrames) ? rpStrictSpatial : rpGeneral}, {d->node2, 1}};
+    VSFilterDependency deps[] = {{d->node1, (vi.numFrames >= vi2->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly}, {d->node2, 1}};
     vi.numFrames = vi2->numFrames;
     vsapi->createVideoFilter(out, "ClipToProp", &vi, clipToPropGetFrame, filterFree<ClipToPropData>, fmParallel, deps, 2, d.release(), core);
 }
@@ -2317,7 +2329,7 @@ static void VS_CC setFramePropsCreate(const VSMap *in, VSMap *out, void *userDat
 // RemoveFrameProps
 
 typedef struct {
-    std::vector<std::string> props;
+    std::vector<std::regex> delProps;
     bool all;
 } RemoveFramePropsDataExtra;
 
@@ -2338,8 +2350,20 @@ static const VSFrame *VS_CC removeFramePropsGetFrame(int n, int activationReason
         if (d->all) {
             vsapi->clearMap(props);
         } else {
-            for (const auto &iter : d->props)
-                vsapi->mapDeleteKey(props, iter.c_str());
+            int numKeys = vsapi->mapNumKeys(props);
+     
+            for (int i = 0; i < numKeys; i++) {
+                for (const auto &iter : d->delProps) {
+                    // implementation detail that may change: all keys are stored in a std::map internally which means they're sorted and this won't skip anything
+                    const char *key = vsapi->mapGetKey(props, i);
+                    if (std::regex_match(key, iter)) {
+                        vsapi->mapDeleteKey(props, key);
+                        --i;
+                        --numKeys;
+                        break;
+                    }
+                }
+            }                
         }
 
         return dst;
@@ -2348,16 +2372,26 @@ static const VSFrame *VS_CC removeFramePropsGetFrame(int n, int activationReason
     return nullptr;
 }
 
+static std::string replaceAll(const std::string &s, const std::string &from, const std::string &to) {
+    std::string r(s);
+    size_t found_pos;
+    size_t last_pos = 0;
+    while ((found_pos = r.find(from, last_pos)) != std::string::npos) {
+        r.replace(found_pos, from.length(), to);
+        last_pos = found_pos + to.length();
+    }
+
+    return r;
+}
+
 static void VS_CC removeFramePropsCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     std::unique_ptr<RemoveFramePropsData> d(new RemoveFramePropsData(vsapi));
 
     int num_props = vsapi->mapNumElements(in, "props");
     d->all = (num_props < 0);
 
-    if (!d->all) {
-        for (int i = 0; i < num_props; i++)
-            d->props.push_back(vsapi->mapGetData(in, "props", i, nullptr));
-    }
+    for (int i = 0; i < num_props; i++)
+        d->delProps.push_back(std::regex("^" + replaceAll(replaceAll(vsapi->mapGetData(in, "props", i, nullptr), "*", "(.*)"), "?", ".") + "$", std::regex::ECMAScript));
 
     d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
 
@@ -2411,9 +2445,13 @@ static void VS_CC setFieldBasedCreate(const VSMap *in, VSMap *out, void *userDat
 //////////////////////////////////////////
 // CopyFrameProps
 
-typedef DualNodeData<NoExtraData> CopyFramePropsData;
+typedef struct {
+    std::vector<std::string> copyProps;
+} CopyFramePropsDataExtra;
 
-static const VSFrame *VS_CC copyFramePropsGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+typedef DualNodeData<CopyFramePropsDataExtra> CopyFramePropsData;
+
+static const VSFrame *VS_CC copyFramePropsAllGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     CopyFramePropsData *d = reinterpret_cast<CopyFramePropsData *>(instanceData);
 
     if (activationReason == arInitial) {
@@ -2434,14 +2472,70 @@ static const VSFrame *VS_CC copyFramePropsGetFrame(int n, int activationReason, 
     return nullptr;
 }
 
+static const VSFrame *VS_CC copyFramePropsGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+    CopyFramePropsData *d = reinterpret_cast<CopyFramePropsData *>(instanceData);
+
+    if (activationReason == arInitial) {
+        vsapi->requestFrameFilter(n, d->node1, frameCtx);
+        vsapi->requestFrameFilter(n, d->node2, frameCtx);
+    } else if (activationReason == arAllFramesReady) {
+        const VSFrame *dst_src = vsapi->getFrameFilter(n, d->node1, frameCtx);
+        const VSFrame *src = vsapi->getFrameFilter(n, d->node2, frameCtx);
+        VSFrame *dst = vsapi->copyFrame(dst_src, core);
+        vsapi->freeFrame(dst_src);
+
+        const VSMap *srcprops = vsapi->getFramePropertiesRO(src);
+        VSMap *dstprops = vsapi->getFramePropertiesRW(dst);
+        for (const auto &iter : d->copyProps) {
+            vsapi->mapDeleteKey(dstprops, iter.c_str());
+
+            // Here's the quite long code to copy any property type from one map to another
+
+            int num = vsapi->mapNumElements(srcprops, iter.c_str());
+            int ptype = vsapi->mapGetType(srcprops, iter.c_str());
+            if (num == 0) {
+                vsapi->mapSetEmpty(dstprops, iter.c_str(), ptype);
+            } else if (num > 0) {
+                if (ptype == ptInt) {
+                    vsapi->mapSetIntArray(dstprops, iter.c_str(), vsapi->mapGetIntArray(srcprops, iter.c_str(), nullptr), num);
+                } else if (ptype == ptFloat) {
+                    vsapi->mapSetFloatArray(dstprops, iter.c_str(), vsapi->mapGetFloatArray(srcprops, iter.c_str(), nullptr), num);
+                } else if (ptype == ptData) {
+                    for (int i = 0; i < num; i++)
+                        vsapi->mapSetData(dstprops, iter.c_str(), vsapi->mapGetData(srcprops, iter.c_str(), i, nullptr), vsapi->mapGetDataSize(srcprops, iter.c_str(), i, nullptr), vsapi->mapGetDataTypeHint(srcprops, iter.c_str(), i, nullptr), maAppend);
+                } else if (ptype == ptAudioNode || ptype == ptVideoNode) {
+                    for (int i = 0; i < num; i++)
+                        vsapi->mapConsumeNode(dstprops, iter.c_str(), vsapi->mapGetNode(srcprops, iter.c_str(), i, nullptr), maAppend);
+                } else if (ptype == ptAudioFrame || ptype == ptVideoFrame) {
+                    for (int i = 0; i < num; i++)
+                        vsapi->mapConsumeFrame(dstprops, iter.c_str(), vsapi->mapGetFrame(srcprops, iter.c_str(), i, nullptr), maAppend);
+                } else if (ptype == ptFunction) {
+                    for (int i = 0; i < num; i++)
+                        vsapi->mapConsumeFunction(dstprops, iter.c_str(), vsapi->mapGetFunction(srcprops, iter.c_str(), i, nullptr), maAppend);
+                }
+            }
+        }
+
+        vsapi->freeFrame(src);
+        return dst;
+    }
+
+    return nullptr;
+}
+
 static void VS_CC copyFramePropsCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     std::unique_ptr<CopyFramePropsData> d(new CopyFramePropsData(vsapi));
+
+    int num_props = vsapi->mapNumElements(in, "props");
+    
+    for (int i = 0; i < num_props; i++)
+        d->copyProps.push_back(vsapi->mapGetData(in, "props", i, nullptr));
 
     d->node1 = vsapi->mapGetNode(in, "clip", 0, nullptr);
     d->node2 = vsapi->mapGetNode(in, "prop_src", 0, nullptr);
 
-    VSFilterDependency deps[] = {{d->node1, rpStrictSpatial}, {d->node2, (vsapi->getVideoInfo(d->node1)->numFrames <= vsapi->getVideoInfo(d->node2)->numFrames) ? rpStrictSpatial : rpGeneral}};
-    vsapi->createVideoFilter(out, "CopyFrameProps", vsapi->getVideoInfo(d->node1), copyFramePropsGetFrame, filterFree<CopyFramePropsData>, fmParallel, deps, 2, d.get(), core);
+    VSFilterDependency deps[] = {{d->node1, rpStrictSpatial}, {d->node2, (vsapi->getVideoInfo(d->node1)->numFrames <= vsapi->getVideoInfo(d->node2)->numFrames) ? rpStrictSpatial : rpFrameReuseLastOnly}};
+    vsapi->createVideoFilter(out, "CopyFrameProps", vsapi->getVideoInfo(d->node1), d->copyProps.empty() ? copyFramePropsAllGetFrame : copyFramePropsGetFrame, filterFree<CopyFramePropsData>, fmParallel, deps, 2, d.get(), core);
     d.release();
 }
 
@@ -2487,7 +2581,7 @@ void stdlibInitialize(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->registerFunction("CropRel", "clip:vnode;left:int:opt;right:int:opt;top:int:opt;bottom:int:opt;", "clip:vnode;", cropRelCreate, 0, plugin);
     vspapi->registerFunction("Crop", "clip:vnode;left:int:opt;right:int:opt;top:int:opt;bottom:int:opt;", "clip:vnode;", cropRelCreate, 0, plugin);
     vspapi->registerFunction("AddBorders", "clip:vnode;left:int:opt;right:int:opt;top:int:opt;bottom:int:opt;color:float[]:opt;", "clip:vnode;", addBordersCreate, 0, plugin);
-    vspapi->registerFunction("ShufflePlanes", "clips:vnode[];planes:int[];colorfamily:int;", "clip:vnode;", shufflePlanesCreate, 0, plugin);
+    vspapi->registerFunction("ShufflePlanes", "clips:vnode[];planes:int[];colorfamily:int;prop_src:vnode:opt;", "clip:vnode;", shufflePlanesCreate, 0, plugin);
     vspapi->registerFunction("SplitPlanes", "clip:vnode;", "clip:vnode[];", splitPlanesCreate, 0, plugin);
     vspapi->registerFunction("SeparateFields", "clip:vnode;tff:int:opt;modify_duration:int:opt;", "clip:vnode;", separateFieldsCreate, 0, plugin);
     vspapi->registerFunction("DoubleWeave", "clip:vnode;tff:int:opt;", "clip:vnode;", doubleWeaveCreate, 0, plugin);
@@ -2509,7 +2603,7 @@ void stdlibInitialize(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
     vspapi->registerFunction("SetFrameProps", "clip:vnode;any", "clip:vnode;", setFramePropsCreate, 0, plugin);
     vspapi->registerFunction("RemoveFrameProps", "clip:vnode;props:data[]:opt;", "clip:vnode;", removeFramePropsCreate, 0, plugin);
     vspapi->registerFunction("SetFieldBased", "clip:vnode;value:int;", "clip:vnode;", setFieldBasedCreate, 0, plugin);
-    vspapi->registerFunction("CopyFrameProps", "clip:vnode;prop_src:vnode;", "clip:vnode;", copyFramePropsCreate, 0, plugin);
+    vspapi->registerFunction("CopyFrameProps", "clip:vnode;prop_src:vnode;props:data[]:opt;", "clip:vnode;", copyFramePropsCreate, 0, plugin);
     vspapi->registerFunction("SetAudioCache", "clip:anode;mode:int:opt;fixedsize:int:opt;maxsize:int:opt;maxhistory:int:opt;", "", setCache, 0, plugin);
     vspapi->registerFunction("SetVideoCache", "clip:vnode;mode:int:opt;fixedsize:int:opt;maxsize:int:opt;maxhistory:int:opt;", "", setCache, 0, plugin);
     vspapi->registerFunction("SetMaxCPU", "cpu:data;", "cpu:data;", setMaxCpu, 0, plugin);

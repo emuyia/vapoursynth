@@ -786,13 +786,22 @@ void VSNode::registerCache(bool add) {
         core->caches.erase(this);
 }
 
+void VSNode::updateCacheState() {
+    if (!cacheOverride) {
+        cacheEnabled = (consumers.size() != 1) || (consumers.size() == 1 && consumers[0].requestPattern != rpStrictSpatial && consumers[0].requestPattern != rpNoFrameReuse);
+        cacheLastOnly = (consumers.size() == 1) && (consumers[0].requestPattern == rpFrameReuseLastOnly);
+
+        if (!cacheEnabled)
+            cache.clear();
+    }
+}
+
 void VSNode::addConsumer(VSNode *consumer, int strictSpatial) {
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
         consumers.push_back({consumer, strictSpatial});
 
-        if (!cacheOverride)
-            cacheEnabled = (consumers.size() != 1) || (consumers.size() == 1 && !consumers[0].requestPattern);
+        updateCacheState();
     }
     registerCache(cacheEnabled);
 }
@@ -807,11 +816,7 @@ void VSNode::removeConsumer(VSNode *consumer, int strictSpatial) {
             }
         }
 
-        if (!cacheOverride)
-            cacheEnabled = (consumers.size() != 1) || (consumers.size() == 1 && !consumers[0].requestPattern);
-
-        if (!cacheEnabled)
-            cache.clear();
+        updateCacheState();
     }
     registerCache(cacheEnabled);
 }
@@ -889,6 +894,7 @@ int VSNode::setLinear() {
     cacheLinear = true;
     cacheOverride = true;
     cacheEnabled = true;
+    cacheLastOnly = false;
     cache.setFixedSize(true);
     cache.setMaxFrames(static_cast<int>(core->threadPool->threadCount()) * 2 + 20);
     registerCache(cacheEnabled);
@@ -906,13 +912,15 @@ void VSNode::setCacheMode(int mode) {
 
         if (mode == -1) {
             cacheOverride = false;
-            cacheEnabled = (consumers.size() > 1) || (consumers.size() == 1 && !consumers[0].requestPattern);
+            updateCacheState();
         } else if (mode == 0) {
             cacheOverride = true;
             cacheEnabled = false;
+            cacheLastOnly = false;
         } else if (mode == 1) {
             cacheOverride = true;
             cacheEnabled = true;
+            cacheLastOnly = false;
         }
 
         // always reset to defaults on mode change
@@ -999,7 +1007,7 @@ PVSFrame VSNode::getFrameInternal(int n, int activationReason, VSFrameContext *f
 
         if (cacheEnabled) {
             std::lock_guard<std::mutex> lock(cacheMutex);
-            if (cacheEnabled)
+            if (cacheEnabled && (!cacheLastOnly || n == vi.numFrames - 1))
                 cache.insert(n, ref);
         }
 
@@ -1796,6 +1804,25 @@ int64_t VSCore::getFreedNodeProcessingTime(bool reset) noexcept {
     return tmp;
 }
 
+#ifdef VS_TARGET_OS_WINDOWS
+void VSCore::isPortableInit() {
+    HMODULE module;
+    GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)&vs_internal_vsapi, &module);
+    std::vector<wchar_t> pathBuf(65536);
+    GetModuleFileName(module, pathBuf.data(), (DWORD)pathBuf.size());
+    m_basePath = pathBuf.data();
+    int levels = 4;
+    do {
+        m_basePath.resize(m_basePath.find_last_of('\\'));
+        std::wstring portableFilePath = m_basePath + L"\\portable.vs";
+        FILE *portableFile = _wfopen(portableFilePath.c_str(), L"rb");
+        m_isPortable = !!portableFile;
+        if (portableFile)
+            fclose(portableFile);
+    } while (!m_isPortable && --levels > 0 && m_basePath.find_last_of('\\') != std::string::npos);
+}
+#endif
+
 VSCore::VSCore(int flags) :
     numFilterInstances(1),
     numFunctionInstances(0),
@@ -1854,31 +1881,20 @@ VSCore::VSCore(int flags) :
     #define VS_INSTALL_REGKEY L"Software\\VapourSynth-32"
     std::wstring bits(L"32");
 #endif
+    std::call_once(m_portableOnceFlag, isPortableInit);
 
-    HMODULE module;
-    GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)&vs_internal_vsapi, &module);
-    std::vector<wchar_t> pathBuf(65536);
-    GetModuleFileName(module, pathBuf.data(), (DWORD)pathBuf.size());
-    std::wstring dllPath = pathBuf.data();
-    dllPath.resize(dllPath.find_last_of('\\') + 1);
-    std::wstring portableFilePath = dllPath + L"portable.vs";
-    FILE *portableFile = _wfopen(portableFilePath.c_str(), L"rb");
-    bool isPortable = !!portableFile;
-    if (portableFile)
-        fclose(portableFile);
-
-    if (isPortable) {
+    if (m_isPortable) {
         // Use alternative search strategy relative to dll path
 
         // Autoload bundled plugins
-        std::wstring corePluginPath = dllPath + L"vapoursynth" + bits + L"\\coreplugins";
+        std::wstring corePluginPath = m_basePath + L"\\vs-coreplugins";
         if (!loadAllPluginsInPath(corePluginPath, filter))
             logMessage(mtCritical, "Core plugin autoloading failed. Installation is broken?");
 
         if (!disableAutoLoading) {
             // Autoload global plugins last, this is so the bundled plugins cannot be overridden easily
             // and accidentally block updated bundled versions
-            std::wstring globalPluginPath = dllPath + L"vapoursynth" + bits + L"\\plugins";
+            std::wstring globalPluginPath = m_basePath + L"\\vs-plugins";
             loadAllPluginsInPath(globalPluginPath, filter);
         }
     } else {
@@ -2474,3 +2490,6 @@ int VSFrame::alignment = 32;
 #endif
 
 thread_local PVSFunctionFrame VSCore::functionFrame;
+bool VSCore::m_isPortable = false;
+std::wstring VSCore::m_basePath;
+std::once_flag VSCore::m_portableOnceFlag;

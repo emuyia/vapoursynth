@@ -684,6 +684,10 @@ enum VSRequestPattern
    
      Only requests frame N to output frame N. The main difference to *rpNoFrameReuse* is that the requested frame is always fixed and known ahead of time. Filter examples Lut, Expr (conditionally, see *rpGeneral* note) and similar.
 
+   * rpFrameReuseLastOnly
+   
+     Similar to *rpNoFrameReuse* but the last frame is cached in case it's requested multiple times.
+
    
 .. _VSCacheMode:
 
@@ -2214,7 +2218,7 @@ struct VSAPI
 
    .. _mapGetFrame:
 
-   const VSFrame_ \*propGetFrame(const VSMap_ \*map, const char \*key, int index, int \*error)
+   const VSFrame_ \*mapGetFrame(const VSMap_ \*map, const char \*key, int index, int \*error)
 
       Retrieves a frame from a map.
 
@@ -2249,7 +2253,7 @@ struct VSAPI
 
    .. _mapGetFunction:
 
-   VSFunctionRef \*mapGetFunc(const VSMap_ \*map, const char \*key, int index, int \*error)
+   VSFunctionRef \*mapGetFunction(const VSMap_ \*map, const char \*key, int index, int \*error)
 
       Retrieves a function from a map.
 
